@@ -2,17 +2,6 @@
 #define NOMINMAX
 #endif
 
-//#define VULKAN_HPP_NO_EXCEPTIONS
-#pragma warning(push)
-#pragma warning(disable : 26812 28182)
-#include <vulkan/vulkan.hpp>
-#pragma warning(pop)
-#include <GLFW/glfw3.h>
-
-#define GLM_FORCE_RADIANS
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -25,6 +14,18 @@
 #include <set>
 #include <stdexcept>
 #include <vector>
+
+//#define VULKAN_HPP_NO_EXCEPTIONS // TODO: Switch to a exception-free programm
+#pragma warning(push)
+#pragma warning(disable : 26812 28182)
+#include <vulkan/vulkan.hpp>
+#pragma warning(pop)
+
+#include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 constexpr int WIDTH = 800;
 constexpr int HEIGHT = 600;
@@ -64,7 +65,7 @@ void vkDestroyDebugUtilsMessengerEXT(VkInstance instance,
 }
 #endif
 
-class HelloTriangleApplication
+class VulkanGLFW
 {
 public:
     void run()
@@ -1319,7 +1320,7 @@ private:
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height) noexcept
     {
-        auto app = static_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+        auto app = static_cast<VulkanGLFW*>(glfwGetWindowUserPointer(window));
         app->framebufferResized = true;
     }
 
@@ -1336,7 +1337,7 @@ private:
 
 int main()
 {
-    HelloTriangleApplication app;
+    VulkanGLFW app;
 
     try
     {
