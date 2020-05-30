@@ -27,6 +27,12 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#pragma warning(push)
+#pragma warning(disable : 26451)
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+#pragma warning(pop)
+
 constexpr int WIDTH = 800;
 constexpr int HEIGHT = 600;
 
@@ -90,6 +96,7 @@ class VulkanGLFW {
     struct Vertex {
         glm::vec2 pos;
         glm::vec3 color;
+        glm::vec2 texCoord;
 
         static vk::VertexInputBindingDescription getBindingDescription() noexcept {
             vk::VertexInputBindingDescription bindingDescription;
@@ -100,7 +107,7 @@ class VulkanGLFW {
             return bindingDescription;
         }
 
-        static std::array<vk::VertexInputAttributeDescription, 2>
+        static std::array<vk::VertexInputAttributeDescription, 3>
         getAttributeDescriptions() noexcept {
             vk::VertexInputAttributeDescription posDesc;
             posDesc.setBinding(0);
@@ -114,7 +121,13 @@ class VulkanGLFW {
             colorDesc.setFormat(vk::Format::eR32G32B32Sfloat);
             colorDesc.setOffset(offsetof(Vertex, color));
 
-            return {posDesc, colorDesc};
+            vk::VertexInputAttributeDescription texCoordDesc;
+            texCoordDesc.setBinding(0);
+            texCoordDesc.setLocation(2);
+            texCoordDesc.setFormat(vk::Format::eR32G32Sfloat);
+            texCoordDesc.setOffset(offsetof(Vertex, texCoord));
+
+            return {posDesc, colorDesc, texCoordDesc};
         }
     };
 
@@ -124,10 +137,10 @@ class VulkanGLFW {
         alignas(16) glm::mat4 proj;
     };
 
-    const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-                                          {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-                                          {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-                                          {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}};
+    const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+                                          {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+                                          {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+                                          {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}};
 
     const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
 
@@ -163,6 +176,11 @@ class VulkanGLFW {
     vk::DeviceMemory indexBufferMemory;
     std::vector<vk::Buffer> uniformBuffers;
     std::vector<vk::DeviceMemory> uniformBuffersMemory;
+
+    vk::Image textureImage;
+    vk::DeviceMemory textureImageMemory;
+    vk::ImageView textureImageView;
+    vk::Sampler textureSampler;
 
     vk::DescriptorPool descriptorPool;
     std::vector<vk::DescriptorSet> descriptorSets;
@@ -203,6 +221,9 @@ class VulkanGLFW {
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
+        createTextureImage();
+        createTextureImageView();
+        createTextureSampler();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -251,6 +272,11 @@ class VulkanGLFW {
 
     void cleanup() noexcept {
         cleanupSwapChain();
+
+        device.destroySampler(textureSampler);
+        device.destroyImageView(textureImageView);
+        device.destroyImage(textureImage);
+        device.freeMemory(textureImageMemory);
 
         device.destroyDescriptorSetLayout(descriptorSetLayout);
 
@@ -404,7 +430,8 @@ class VulkanGLFW {
             queueCreateInfos.push_back({{}, queueFamily, 1, &queuePriority});
         };
 
-        const vk::PhysicalDeviceFeatures deviceFeatures;
+        vk::PhysicalDeviceFeatures deviceFeatures;
+        deviceFeatures.setSamplerAnisotropy(true);
 
         vk::DeviceCreateInfo createInfo;
         createInfo.setQueueCreateInfoCount(static_cast<uint32_t>(queueCreateInfos.size()));
@@ -465,7 +492,7 @@ class VulkanGLFW {
         createInfo.setPreTransform(swapChainSupport.capabilities.currentTransform);
         createInfo.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque);
         createInfo.setPresentMode(presentMode);
-        createInfo.setClipped(VK_TRUE);
+        createInfo.setClipped(true);
         createInfo.setOldSwapchain(nullptr);
 
         swapChain = device.createSwapchainKHR(createInfo);
@@ -479,23 +506,7 @@ class VulkanGLFW {
         swapChainImageViews.resize(swapChainImages.size());
 
         for (size_t i = 0; i < swapChainImages.size(); i++) {
-            const vk::ComponentMapping components;  // identity for all components
-
-            vk::ImageSubresourceRange subresourceRange;
-            subresourceRange.setAspectMask(vk::ImageAspectFlagBits::eColor);
-            subresourceRange.setBaseMipLevel(0);
-            subresourceRange.setLevelCount(1);
-            subresourceRange.setBaseArrayLayer(0);
-            subresourceRange.setLayerCount(1);
-
-            vk::ImageViewCreateInfo createInfo;
-            createInfo.setImage(swapChainImages[i]);
-            createInfo.setViewType(vk::ImageViewType::e2D);
-            createInfo.setFormat(swapChainImageFormat);
-            createInfo.setComponents(components);
-            createInfo.setSubresourceRange(subresourceRange);
-
-            swapChainImageViews[i] = device.createImageView(createInfo);
+            swapChainImageViews[i] = createImageView(swapChainImages[i], swapChainImageFormat);
         }
     }
 
@@ -546,9 +557,18 @@ class VulkanGLFW {
         uboLayoutBinding.setStageFlags(vk::ShaderStageFlagBits::eVertex);
         uboLayoutBinding.setPImmutableSamplers(nullptr);
 
+        vk::DescriptorSetLayoutBinding samplerLayoutBinding;
+        samplerLayoutBinding.setBinding(1);
+        samplerLayoutBinding.setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
+        samplerLayoutBinding.setDescriptorCount(1);
+        samplerLayoutBinding.setStageFlags(vk::ShaderStageFlagBits::eFragment);
+        samplerLayoutBinding.setPImmutableSamplers(nullptr);
+
+        std::array bindings = {uboLayoutBinding, samplerLayoutBinding};
+
         vk::DescriptorSetLayoutCreateInfo layoutInfo;
-        layoutInfo.setBindingCount(1);
-        layoutInfo.setPBindings(&uboLayoutBinding);
+        layoutInfo.setBindingCount(static_cast<uint32_t>(bindings.size()));
+        layoutInfo.setPBindings(bindings.data());
 
         descriptorSetLayout = device.createDescriptorSetLayout(layoutInfo);
     }
@@ -585,7 +605,7 @@ class VulkanGLFW {
 
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
         inputAssembly.setTopology(vk::PrimitiveTopology::eTriangleList);
-        inputAssembly.setPrimitiveRestartEnable(VK_FALSE);
+        inputAssembly.setPrimitiveRestartEnable(false);
 
         const vk::Viewport viewport(0.f, 0.f, static_cast<float>(swapChainExtent.width),
                                     static_cast<float>(swapChainExtent.height), 0.f, 1.f);
@@ -599,29 +619,29 @@ class VulkanGLFW {
         viewportState.setPScissors(&scissor);
 
         vk::PipelineRasterizationStateCreateInfo rasterizer;
-        rasterizer.setDepthClampEnable(VK_FALSE);
+        rasterizer.setDepthClampEnable(false);
         rasterizer.setPolygonMode(vk::PolygonMode::eFill);
         rasterizer.setLineWidth(1.f);
         rasterizer.setCullMode(vk::CullModeFlagBits::eBack);
         rasterizer.setFrontFace(vk::FrontFace::eCounterClockwise);
-        rasterizer.setDepthBiasEnable(VK_FALSE);
+        rasterizer.setDepthBiasEnable(false);
         rasterizer.setDepthBiasConstantFactor(0.f);  // Optional
         rasterizer.setDepthBiasClamp(0.f);           // Optional
         rasterizer.setDepthBiasSlopeFactor(0.f);     // Optional
 
         vk::PipelineMultisampleStateCreateInfo multisampling;
-        multisampling.setSampleShadingEnable(VK_FALSE);
+        multisampling.setSampleShadingEnable(false);
         multisampling.setRasterizationSamples(vk::SampleCountFlagBits::e1);
         multisampling.setMinSampleShading(1.0f);           // Optional
         multisampling.setPSampleMask(nullptr);             // Optional
-        multisampling.setAlphaToCoverageEnable(VK_FALSE);  // Optional
-        multisampling.setAlphaToOneEnable(VK_FALSE);       // Optional
+        multisampling.setAlphaToCoverageEnable(false);  // Optional
+        multisampling.setAlphaToOneEnable(false);       // Optional
 
         vk::PipelineColorBlendAttachmentState colorBlendAttachment;
         colorBlendAttachment.setColorWriteMask(
             vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
             vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
-        colorBlendAttachment.setBlendEnable(VK_FALSE);
+        colorBlendAttachment.setBlendEnable(false);
         colorBlendAttachment.setSrcColorBlendFactor(vk::BlendFactor::eOne);   // Optional
         colorBlendAttachment.setDstColorBlendFactor(vk::BlendFactor::eZero);  // Optional
         colorBlendAttachment.setColorBlendOp(vk::BlendOp::eAdd);              // Optional
@@ -630,7 +650,7 @@ class VulkanGLFW {
         colorBlendAttachment.setAlphaBlendOp(vk::BlendOp::eAdd);              // Optional
 
         vk::PipelineColorBlendStateCreateInfo colorBlending;
-        colorBlending.setLogicOpEnable(VK_FALSE);
+        colorBlending.setLogicOpEnable(false);
         colorBlending.setLogicOp(vk::LogicOp::eCopy);  // Optional
         colorBlending.setAttachmentCount(1);
         colorBlending.setPAttachments(&colorBlendAttachment);
@@ -665,6 +685,99 @@ class VulkanGLFW {
 
         device.destroyShaderModule(vertShaderModule);
         device.destroyShaderModule(fragShaderModule);
+    }
+
+    void createFramebuffers() {
+        swapChainFramebuffers.resize(swapChainImageViews.size());
+
+        for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+            const vk::ImageView attachments[] = {swapChainImageViews[i]};
+
+            vk::FramebufferCreateInfo framebufferInfo;
+            framebufferInfo.setRenderPass(renderPass);
+            framebufferInfo.setAttachmentCount(1);
+            framebufferInfo.setPAttachments(attachments);
+            framebufferInfo.setWidth(swapChainExtent.width);
+            framebufferInfo.setHeight(swapChainExtent.height);
+            framebufferInfo.setLayers(1);
+
+            swapChainFramebuffers[i] = device.createFramebuffer(framebufferInfo);
+        }
+    }
+
+    void createCommandPool() {
+        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+        const vk::CommandPoolCreateInfo poolInfo({}, queueFamilyIndices.graphicsFamily.value());
+        commandPool = device.createCommandPool(poolInfo);
+    }
+
+    void createTextureImage() {
+        int texWidth, texHeight, texChannels;
+        auto pixels =
+            stbi_load("textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        auto imageSize = static_cast<vk::DeviceSize>(texWidth * texHeight * 4);
+
+        if (!pixels) {
+            throw std::runtime_error("failed to load texture image!");
+        }
+
+        auto [stagingBuffer, stagingBufferMemory] = createBuffer(
+            imageSize, vk::BufferUsageFlagBits::eTransferSrc,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+        void* data = device.mapMemory(stagingBufferMemory, 0, imageSize);
+        memcpy(data, pixels, static_cast<size_t>(imageSize));
+        device.unmapMemory(stagingBufferMemory);
+
+        stbi_image_free(pixels);
+
+        vk::Extent3D imageExtent;
+        imageExtent.setWidth(static_cast<uint32_t>(texHeight));
+        imageExtent.setHeight(static_cast<uint32_t>(texHeight));
+        imageExtent.setDepth(1);
+
+        std::tie(textureImage, textureImageMemory) =
+            createImage(imageExtent, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+                        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+                        vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+        transitionImageLayout(textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageLayout::eUndefined,
+                              vk::ImageLayout::eTransferDstOptimal);
+
+        copyBufferToImage(stagingBuffer, textureImage, imageExtent);
+
+        transitionImageLayout(textureImage, vk::Format::eR8G8B8A8Srgb,
+                              vk::ImageLayout::eTransferDstOptimal,
+                              vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        device.destroyBuffer(stagingBuffer);
+        device.freeMemory(stagingBufferMemory);
+    }
+
+    void createTextureImageView() {
+        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb);
+    }
+
+    void createTextureSampler() {
+        vk::SamplerCreateInfo samplerInfo;
+        samplerInfo.setMagFilter(vk::Filter::eLinear);
+        samplerInfo.setMinFilter(vk::Filter::eLinear);
+        samplerInfo.setAddressModeU(vk::SamplerAddressMode::eRepeat);
+        samplerInfo.setAddressModeV(vk::SamplerAddressMode::eRepeat);
+        samplerInfo.setAddressModeW(vk::SamplerAddressMode::eRepeat);
+        samplerInfo.setAnisotropyEnable(true);
+        samplerInfo.setMaxAnisotropy(16.0f);
+        samplerInfo.setBorderColor(vk::BorderColor::eIntOpaqueBlack);
+        samplerInfo.setUnnormalizedCoordinates(false);
+        samplerInfo.setCompareEnable(false);
+        samplerInfo.setCompareOp(vk::CompareOp::eAlways);
+        samplerInfo.setMipmapMode(vk::SamplerMipmapMode::eLinear);
+        samplerInfo.setMipLodBias(0.0f);
+        samplerInfo.setMinLod(0.0f);
+        samplerInfo.setMaxLod(0.0f);
+
+        textureSampler = device.createSampler(samplerInfo);
     }
 
     void createVertexBuffer() {
@@ -737,12 +850,19 @@ class VulkanGLFW {
     }
 
     void createDescriptorPool() {
-        const vk::DescriptorPoolSize poolSize(vk::DescriptorType::eUniformBuffer,
-                                              static_cast<uint32_t>(swapChainImages.size()));
+        vk::DescriptorPoolSize uniformPoolSize;
+        uniformPoolSize.setType(vk::DescriptorType::eUniformBuffer);
+        uniformPoolSize.setDescriptorCount(static_cast<uint32_t>(swapChainImages.size()));
+
+        vk::DescriptorPoolSize combinedSamplerPoolSize;
+        combinedSamplerPoolSize.setType(vk::DescriptorType::eCombinedImageSampler);
+        combinedSamplerPoolSize.setDescriptorCount(static_cast<uint32_t>(swapChainImages.size()));
+
+        std::array poolSizes{uniformPoolSize, combinedSamplerPoolSize};
 
         vk::DescriptorPoolCreateInfo poolInfo;
-        poolInfo.setPoolSizeCount(1);
-        poolInfo.setPPoolSizes(&poolSize);
+        poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()));
+        poolInfo.setPPoolSizes(poolSizes.data());
         poolInfo.setMaxSets(static_cast<uint32_t>(swapChainImages.size()));
 
         descriptorPool = device.createDescriptorPool(poolInfo);
@@ -756,45 +876,38 @@ class VulkanGLFW {
         allocInfo.setPSetLayouts(layouts.data());
 
         descriptorSets = device.allocateDescriptorSets(allocInfo);
-
+        
         for (size_t i = 0; i < swapChainImages.size(); i++) {
-            const vk::DescriptorBufferInfo bufferInfo(uniformBuffers[i], 0,
-                                                      sizeof(UniformBufferObject));
-            vk::WriteDescriptorSet descriptorWrite;
-            descriptorWrite.setDstSet(descriptorSets[i]);
-            descriptorWrite.setDstBinding(0);
-            descriptorWrite.setDstArrayElement(0);
-            descriptorWrite.setDescriptorType(vk::DescriptorType::eUniformBuffer);
-            descriptorWrite.setDescriptorCount(1);
-            descriptorWrite.setPBufferInfo(&bufferInfo);
+            vk::DescriptorBufferInfo bufferInfo;
+            bufferInfo.setBuffer(uniformBuffers[i]);
+            bufferInfo.setOffset(0);
+            bufferInfo.setRange(sizeof(UniformBufferObject));
 
-            device.updateDescriptorSets(descriptorWrite, nullptr);
+            vk::DescriptorImageInfo imageInfo;
+            imageInfo.setImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+            imageInfo.setImageView(textureImageView);
+            imageInfo.setSampler(textureSampler);
+
+            vk::WriteDescriptorSet uniformDescriptorWrite;
+            uniformDescriptorWrite.setDstSet(descriptorSets[i]);
+            uniformDescriptorWrite.setDstBinding(0);
+            uniformDescriptorWrite.setDstArrayElement(0);
+            uniformDescriptorWrite.setDescriptorType(vk::DescriptorType::eUniformBuffer);
+            uniformDescriptorWrite.setDescriptorCount(1);
+            uniformDescriptorWrite.setPBufferInfo(&bufferInfo);
+
+            vk::WriteDescriptorSet combinedSamplerDescriptorWrite;
+            combinedSamplerDescriptorWrite.setDstSet(descriptorSets[i]);
+            combinedSamplerDescriptorWrite.setDstBinding(1);
+            combinedSamplerDescriptorWrite.setDstArrayElement(0);
+            combinedSamplerDescriptorWrite.setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
+            combinedSamplerDescriptorWrite.setDescriptorCount(1);
+            combinedSamplerDescriptorWrite.setPImageInfo(&imageInfo);
+
+            std::array descriptorWrites{uniformDescriptorWrite, combinedSamplerDescriptorWrite};
+
+            device.updateDescriptorSets(descriptorWrites, nullptr);
         }
-    }
-
-    void createFramebuffers() {
-        swapChainFramebuffers.resize(swapChainImageViews.size());
-
-        for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-            const vk::ImageView attachments[] = {swapChainImageViews[i]};
-
-            vk::FramebufferCreateInfo framebufferInfo;
-            framebufferInfo.setRenderPass(renderPass);
-            framebufferInfo.setAttachmentCount(1);
-            framebufferInfo.setPAttachments(attachments);
-            framebufferInfo.setWidth(swapChainExtent.width);
-            framebufferInfo.setHeight(swapChainExtent.height);
-            framebufferInfo.setLayers(1);
-
-            swapChainFramebuffers[i] = device.createFramebuffer(framebufferInfo);
-        }
-    }
-
-    void createCommandPool() {
-        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
-
-        const vk::CommandPoolCreateInfo poolInfo({}, queueFamilyIndices.graphicsFamily.value());
-        commandPool = device.createCommandPool(poolInfo);
     }
 
     void createCommandBuffers() {
@@ -852,7 +965,7 @@ class VulkanGLFW {
     }
 
     void drawFrame() {
-        device.waitForFences(inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+        device.waitForFences(inFlightFences[currentFrame], true, UINT64_MAX);
 
         vk::Result result;
         uint32_t imageIndex;
@@ -868,7 +981,7 @@ class VulkanGLFW {
 
         // Check if a previous frame is using this image (i.e. there is its fence to wait on)
         if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
-            device.waitForFences(imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+            device.waitForFences(imagesInFlight[imageIndex], true, UINT64_MAX);
         }
 
         // Mark the image as now being in use by this frame
@@ -916,6 +1029,125 @@ class VulkanGLFW {
         presentQueue.waitIdle();
 
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    }
+
+    vk::ImageView createImageView(vk::Image& image, vk::Format format) {
+        vk::ImageSubresourceRange subresourceRange;
+        subresourceRange.setAspectMask(vk::ImageAspectFlagBits::eColor);
+        subresourceRange.setBaseMipLevel(0);
+        subresourceRange.setLevelCount(1);
+        subresourceRange.setBaseArrayLayer(0);
+        subresourceRange.setLayerCount(1);
+
+        vk::ImageViewCreateInfo viewInfo;
+        viewInfo.setImage(image);
+        viewInfo.setViewType(vk::ImageViewType::e2D);
+        viewInfo.setFormat(format);
+        viewInfo.setSubresourceRange(subresourceRange);
+
+        return device.createImageView(viewInfo);
+    }
+
+    std::tuple<vk::Image, vk::DeviceMemory> createImage(vk::Extent3D& extent, vk::Format format,
+                                                        vk::ImageTiling tiling,
+                                                        vk::ImageUsageFlags usage,
+                                                        vk::MemoryPropertyFlags properties) {
+        vk::ImageCreateInfo imageInfo;
+        imageInfo.setImageType(vk::ImageType::e2D);
+        imageInfo.setExtent(extent);
+        imageInfo.setMipLevels(1);
+        imageInfo.setArrayLayers(1);
+        imageInfo.setFormat(format);
+        imageInfo.setTiling(tiling);
+        imageInfo.setInitialLayout(vk::ImageLayout::eUndefined);
+        imageInfo.setUsage(usage);
+        imageInfo.setSharingMode(vk::SharingMode::eExclusive);
+        imageInfo.setSamples(vk::SampleCountFlagBits::e1);
+
+        auto image = device.createImage(imageInfo);
+
+        const auto memRequirements = device.getImageMemoryRequirements(image);
+        const auto memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+        vk::MemoryAllocateInfo allocInfo;
+        allocInfo.setAllocationSize(memRequirements.size);
+        allocInfo.setMemoryTypeIndex(memoryTypeIndex);
+
+        auto imageMemory = device.allocateMemory(allocInfo);
+
+        device.bindImageMemory(image, imageMemory, 0);
+
+        return {image, imageMemory};
+    }
+
+    void transitionImageLayout(vk::Image& image, vk::Format format, vk::ImageLayout oldLayout,
+                               vk::ImageLayout newLayout) {
+        auto commandBuffer = beginSingleTimeCommands();
+
+        vk::ImageSubresourceRange subresourceRange;
+        subresourceRange.setAspectMask(vk::ImageAspectFlagBits::eColor);
+        subresourceRange.setBaseMipLevel(0);
+        subresourceRange.setLevelCount(1);
+        subresourceRange.setBaseArrayLayer(0);
+        subresourceRange.setLayerCount(1);
+
+        vk::ImageMemoryBarrier barrier;
+        barrier.setOldLayout(oldLayout);
+        barrier.setNewLayout(newLayout);
+        barrier.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+        barrier.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+        barrier.setImage(image);
+        barrier.setSubresourceRange(subresourceRange);
+        barrier.setSrcAccessMask({});
+        barrier.setDstAccessMask({});
+
+        vk::PipelineStageFlags sourceStage;
+        vk::PipelineStageFlags destinationStage;
+
+        if (oldLayout == vk::ImageLayout::eUndefined &&
+            newLayout == vk::ImageLayout::eTransferDstOptimal) {
+            barrier.setSrcAccessMask({});
+            barrier.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+
+            sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
+            destinationStage = vk::PipelineStageFlagBits::eTransfer;
+        } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
+                   newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+            barrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite);
+            barrier.setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+
+            sourceStage = vk::PipelineStageFlagBits::eTransfer;
+            destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+        } else {
+            throw std::invalid_argument("unsupported layout transition!");
+        }
+
+        commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, nullptr, nullptr, barrier);
+
+        endSingleTimeCommands(commandBuffer);
+    }
+
+    void copyBufferToImage(vk::Buffer& buffer, vk::Image& image, vk::Extent3D& extent) {
+        auto commandBuffer = beginSingleTimeCommands();
+
+        vk::ImageSubresourceLayers imgSubresource;
+        imgSubresource.setAspectMask(vk::ImageAspectFlagBits::eColor);
+        imgSubresource.setMipLevel(0);
+        imgSubresource.setBaseArrayLayer(0);
+        imgSubresource.setLayerCount(1);
+
+        vk::BufferImageCopy region;
+        region.setBufferOffset(0);
+        region.setBufferRowLength(0);
+        region.setBufferImageHeight(0);
+        region.setImageSubresource(imgSubresource);
+        region.setImageOffset({0, 0, 0});
+        region.setImageExtent(extent);
+
+        commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal,
+                                        region);
+
+        endSingleTimeCommands(commandBuffer);
     }
 
     void updateUniformBuffer(uint32_t currentImage) {
@@ -967,6 +1199,19 @@ class VulkanGLFW {
     }
 
     void copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer, vk::DeviceSize size) {
+        auto commandBuffer = beginSingleTimeCommands();
+
+        vk::BufferCopy copyRegion;
+        copyRegion.setSrcOffset(0);
+        copyRegion.setDstOffset(0);
+        copyRegion.setSize(size);
+
+        commandBuffer.copyBuffer(srcBuffer, dstBuffer, copyRegion);
+
+        endSingleTimeCommands(commandBuffer);
+    }
+
+    vk::CommandBuffer beginSingleTimeCommands() {
         vk::CommandBufferAllocateInfo allocInfo;
         allocInfo.setLevel(vk::CommandBufferLevel::ePrimary);
         allocInfo.setCommandPool(commandPool);
@@ -977,14 +1222,11 @@ class VulkanGLFW {
         const vk::CommandBufferBeginInfo beginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
         commandBuffer.begin(beginInfo);
-        {
-            vk::BufferCopy copyRegion;
-            copyRegion.setSrcOffset(0);
-            copyRegion.setDstOffset(0);
-            copyRegion.setSize(size);
 
-            commandBuffer.copyBuffer(srcBuffer, dstBuffer, copyRegion);
-        }
+        return commandBuffer;
+    }
+
+    void endSingleTimeCommands(vk::CommandBuffer& commandBuffer) {
         commandBuffer.end();
 
         vk::SubmitInfo submitInfo;
@@ -1079,7 +1321,9 @@ class VulkanGLFW {
             swapChainAdequate = swapChainSupport.isAdequate();
         }
 
-        return indices.isComplete() && extensionsSupported && swapChainAdequate;
+        const auto supportedFeatures = device.getFeatures();
+
+        return indices.isComplete() && extensionsSupported && swapChainAdequate && supportedFeatures.samplerAnisotropy;
     }
 
     bool checkDeviceExtensionSupport(const vk::PhysicalDevice& device) {
