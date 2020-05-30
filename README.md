@@ -8,6 +8,7 @@ Simple model viewer program written in C++17.
 - [Vulkan](https://www.khronos.org/vulkan/)
 - [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
 - [GLM](https://glm.g-truc.net/)
+- [stb](https://github.com/nothings/stb)
 
 ## Progress
 
@@ -16,7 +17,7 @@ Simple model viewer program written in C++17.
 - [x] Pipeline Setup
 - [x] Vertex Buffers
 - [x] Uniform Buffers
-- [ ] Texture mapping
+- [x] Texture mapping
 - [ ] Depth Buffer
 - [ ] Model loading
 - [ ] Memory Management
