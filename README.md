@@ -18,7 +18,7 @@ Simple model viewer program written in C++17.
 - [x] Vertex Buffers
 - [x] Uniform Buffers
 - [x] Texture mapping
-- [ ] Depth Buffer
+- [x] Depth Buffer
 - [ ] Model loading
 - [ ] Memory Management
 - [ ] Exception-free
@@ -27,4 +27,5 @@ Simple model viewer program written in C++17.
 
 - Considere [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) for better memory management
 - Use [EASTL](https://github.com/electronicarts/EASTL) ?
-- [IMGUI](https://github.com/ocornut/imgui) for on-screen menu ?
+- [IMGUI](https://github.com/ocornut/imgui) for on-screen menu
+- switch from glm to google's [mathfu](https://github.com/google/mathfu)
