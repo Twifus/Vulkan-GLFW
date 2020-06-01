@@ -24,6 +24,7 @@
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -94,7 +95,7 @@ class VulkanGLFW {
     };
 
     struct Vertex {
-        glm::vec2 pos;
+        glm::vec3 pos;
         glm::vec3 color;
         glm::vec2 texCoord;
 
@@ -112,7 +113,7 @@ class VulkanGLFW {
             vk::VertexInputAttributeDescription posDesc;
             posDesc.setBinding(0);
             posDesc.setLocation(0);
-            posDesc.setFormat(vk::Format::eR32G32Sfloat);
+            posDesc.setFormat(vk::Format::eR32G32B32Sfloat);
             posDesc.setOffset(offsetof(Vertex, pos));
 
             vk::VertexInputAttributeDescription colorDesc;
@@ -137,12 +138,17 @@ class VulkanGLFW {
         alignas(16) glm::mat4 proj;
     };
 
-    const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-                                          {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-                                          {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-                                          {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}};
+    const std::vector<Vertex> vertices = {{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+                                          {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+                                          {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+                                          {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
 
-    const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
+                                          {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+                                          {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+                                          {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+                                          {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}};
+
+    const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
 
     GLFWwindow* window = nullptr;
 
@@ -176,6 +182,10 @@ class VulkanGLFW {
     vk::DeviceMemory indexBufferMemory;
     std::vector<vk::Buffer> uniformBuffers;
     std::vector<vk::DeviceMemory> uniformBuffersMemory;
+
+    vk::Image depthImage;
+    vk::DeviceMemory depthImageMemory;
+    vk::ImageView depthImageView;
 
     vk::Image textureImage;
     vk::DeviceMemory textureImageMemory;
@@ -219,8 +229,9 @@ class VulkanGLFW {
         createRenderPass();
         createDescriptorSetLayout();
         createGraphicsPipeline();
-        createFramebuffers();
         createCommandPool();
+        createDepthResources();
+        createFramebuffers();
         createTextureImage();
         createTextureImageView();
         createTextureSampler();
@@ -243,6 +254,10 @@ class VulkanGLFW {
     }
 
     void cleanupSwapChain() noexcept {
+        device.destroyImageView(depthImageView);
+        device.destroyImage(depthImage);
+        device.freeMemory(depthImageMemory);
+
         for (auto& frameBuffer : swapChainFramebuffers) {
             device.destroyFramebuffer(frameBuffer);
         }
@@ -330,6 +345,7 @@ class VulkanGLFW {
         createImageViews();
         createRenderPass();
         createGraphicsPipeline();
+        createDepthResources();
         createFramebuffers();
         createUniformBuffers();
         createDescriptorPool();
@@ -506,7 +522,8 @@ class VulkanGLFW {
         swapChainImageViews.resize(swapChainImages.size());
 
         for (size_t i = 0; i < swapChainImages.size(); i++) {
-            swapChainImageViews[i] = createImageView(swapChainImages[i], swapChainImageFormat);
+            swapChainImageViews[i] = createImageView(swapChainImages[i], swapChainImageFormat,
+                                                     vk::ImageAspectFlagBits::eColor);
         }
     }
 
@@ -521,14 +538,31 @@ class VulkanGLFW {
         colorAttachment.setInitialLayout(vk::ImageLayout::eUndefined);
         colorAttachment.setFinalLayout(vk::ImageLayout::ePresentSrcKHR);
 
+        vk::AttachmentDescription depthAttachment;
+        depthAttachment.setFormat(findDepthFormat());
+        depthAttachment.setSamples(vk::SampleCountFlagBits::e1);
+        depthAttachment.setLoadOp(vk::AttachmentLoadOp::eClear);
+        depthAttachment.setStoreOp(vk::AttachmentStoreOp::eDontCare);
+        depthAttachment.setStencilStoreOp(vk::AttachmentStoreOp::eDontCare);
+        depthAttachment.setStencilLoadOp(vk::AttachmentLoadOp::eDontCare);
+        depthAttachment.setInitialLayout(vk::ImageLayout::eUndefined);
+        depthAttachment.setFinalLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal);
+
+        std::array attachments = {colorAttachment, depthAttachment};
+
         vk::AttachmentReference colorAttachmentRef;
         colorAttachmentRef.setAttachment(0);
         colorAttachmentRef.setLayout(vk::ImageLayout::eColorAttachmentOptimal);
+
+        vk::AttachmentReference depthAttachmentRef;
+        depthAttachmentRef.setAttachment(1);
+        depthAttachmentRef.setLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
         vk::SubpassDescription subpass;
         subpass.setPipelineBindPoint(vk::PipelineBindPoint::eGraphics);
         subpass.setColorAttachmentCount(1);
         subpass.setPColorAttachments(&colorAttachmentRef);
+        subpass.setPDepthStencilAttachment(&depthAttachmentRef);
 
         vk::SubpassDependency dependency;
         dependency.setSrcSubpass(VK_SUBPASS_EXTERNAL);
@@ -539,8 +573,8 @@ class VulkanGLFW {
         dependency.setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);
 
         vk::RenderPassCreateInfo renderPassInfo;
-        renderPassInfo.setAttachmentCount(1);
-        renderPassInfo.setPAttachments(&colorAttachment);
+        renderPassInfo.setAttachmentCount(static_cast<uint32_t>(attachments.size()));
+        renderPassInfo.setPAttachments(attachments.data());
         renderPassInfo.setSubpassCount(1);
         renderPassInfo.setPSubpasses(&subpass);
         renderPassInfo.setDependencyCount(1);
@@ -632,10 +666,21 @@ class VulkanGLFW {
         vk::PipelineMultisampleStateCreateInfo multisampling;
         multisampling.setSampleShadingEnable(false);
         multisampling.setRasterizationSamples(vk::SampleCountFlagBits::e1);
-        multisampling.setMinSampleShading(1.0f);           // Optional
-        multisampling.setPSampleMask(nullptr);             // Optional
+        multisampling.setMinSampleShading(1.0f);        // Optional
+        multisampling.setPSampleMask(nullptr);          // Optional
         multisampling.setAlphaToCoverageEnable(false);  // Optional
         multisampling.setAlphaToOneEnable(false);       // Optional
+
+        vk::PipelineDepthStencilStateCreateInfo depthStencil;
+        depthStencil.setDepthTestEnable(true);
+        depthStencil.setDepthWriteEnable(true);
+        depthStencil.setDepthCompareOp(vk::CompareOp::eLess);
+        depthStencil.setDepthBoundsTestEnable(false);
+        depthStencil.setMinDepthBounds(0.0f);  // Optionnal
+        depthStencil.setMaxDepthBounds(1.0f);  // Optionnal
+        depthStencil.setStencilTestEnable(true);
+        depthStencil.setFront({});  // Optionnal
+        depthStencil.setBack({});   // Optionnal
 
         vk::PipelineColorBlendAttachmentState colorBlendAttachment;
         colorBlendAttachment.setColorWriteMask(
@@ -672,7 +717,7 @@ class VulkanGLFW {
         pipelineInfo.setPViewportState(&viewportState);
         pipelineInfo.setPRasterizationState(&rasterizer);
         pipelineInfo.setPMultisampleState(&multisampling);
-        pipelineInfo.setPDepthStencilState(nullptr);  // Optional
+        pipelineInfo.setPDepthStencilState(&depthStencil);  // Optional
         pipelineInfo.setPColorBlendState(&colorBlending);
         pipelineInfo.setPDynamicState(nullptr);  // Optional
         pipelineInfo.setLayout(pipelineLayout);
@@ -691,12 +736,12 @@ class VulkanGLFW {
         swapChainFramebuffers.resize(swapChainImageViews.size());
 
         for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-            const vk::ImageView attachments[] = {swapChainImageViews[i]};
+            const std::array attachments = {swapChainImageViews[i], depthImageView};
 
             vk::FramebufferCreateInfo framebufferInfo;
             framebufferInfo.setRenderPass(renderPass);
-            framebufferInfo.setAttachmentCount(1);
-            framebufferInfo.setPAttachments(attachments);
+            framebufferInfo.setAttachmentCount(static_cast<uint32_t>(attachments.size()));
+            framebufferInfo.setPAttachments(attachments.data());
             framebufferInfo.setWidth(swapChainExtent.width);
             framebufferInfo.setHeight(swapChainExtent.height);
             framebufferInfo.setLayers(1);
@@ -710,6 +755,21 @@ class VulkanGLFW {
 
         const vk::CommandPoolCreateInfo poolInfo({}, queueFamilyIndices.graphicsFamily.value());
         commandPool = device.createCommandPool(poolInfo);
+    }
+
+    void createDepthResources() {
+        auto depthFormat = findDepthFormat();
+        vk::Extent3D depthImageExtent(swapChainExtent, 1);
+
+        std::tie(depthImage, depthImageMemory) =
+            createImage(depthImageExtent, depthFormat, vk::ImageTiling::eOptimal,
+                        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                        vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+        depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+
+        transitionImageLayout(depthImage, depthFormat, vk::ImageLayout::eUndefined,
+                              vk::ImageLayout::eDepthStencilAttachmentOptimal);
     }
 
     void createTextureImage() {
@@ -756,7 +816,8 @@ class VulkanGLFW {
     }
 
     void createTextureImageView() {
-        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb);
+        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb,
+                                           vk::ImageAspectFlagBits::eColor);
     }
 
     void createTextureSampler() {
@@ -876,7 +937,7 @@ class VulkanGLFW {
         allocInfo.setPSetLayouts(layouts.data());
 
         descriptorSets = device.allocateDescriptorSets(allocInfo);
-        
+
         for (size_t i = 0; i < swapChainImages.size(); i++) {
             vk::DescriptorBufferInfo bufferInfo;
             bufferInfo.setBuffer(uniformBuffers[i]);
@@ -900,7 +961,8 @@ class VulkanGLFW {
             combinedSamplerDescriptorWrite.setDstSet(descriptorSets[i]);
             combinedSamplerDescriptorWrite.setDstBinding(1);
             combinedSamplerDescriptorWrite.setDstArrayElement(0);
-            combinedSamplerDescriptorWrite.setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
+            combinedSamplerDescriptorWrite.setDescriptorType(
+                vk::DescriptorType::eCombinedImageSampler);
             combinedSamplerDescriptorWrite.setDescriptorCount(1);
             combinedSamplerDescriptorWrite.setPImageInfo(&imageInfo);
 
@@ -927,14 +989,16 @@ class VulkanGLFW {
 
             cmdBuffer.begin(beginInfo);
             {
-                vk::ClearValue clearColor({std::array<float, 4>{0.f, 0.f, 0.f, 1.f}});
+                std::array<vk::ClearValue, 2> clearValues{
+                    vk::ClearColorValue(std::array<uint32_t, 4>{0, 0, 0, 1}),
+                    vk::ClearDepthStencilValue(1, 0)};
 
                 vk::RenderPassBeginInfo renderPassInfo;
                 renderPassInfo.setRenderPass(renderPass);
                 renderPassInfo.setFramebuffer(swapChainFramebuffers[i]);
                 renderPassInfo.setRenderArea({{0, 0}, swapChainExtent});
-                renderPassInfo.setClearValueCount(1);
-                renderPassInfo.setPClearValues(&clearColor);
+                renderPassInfo.setClearValueCount(static_cast<uint32_t>(clearValues.size()));
+                renderPassInfo.setPClearValues(clearValues.data());
 
                 cmdBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
                 {
@@ -1031,9 +1095,37 @@ class VulkanGLFW {
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    vk::ImageView createImageView(vk::Image& image, vk::Format format) {
+    vk::Format findDepthFormat() {
+        return findSupportedFormat(
+            {vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
+            vk::ImageTiling::eOptimal, vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+    }
+
+    bool hasStencilComponent(vk::Format format) {
+        return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint;
+    }
+
+    vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates,
+                                   vk::ImageTiling tiling, vk::FormatFeatureFlags features) {
+        for (auto format : candidates) {
+            vk::FormatProperties props = physicalDevice.getFormatProperties(format);
+
+            if (tiling == vk::ImageTiling::eLinear &&
+                (props.linearTilingFeatures & features) == features) {
+                return format;
+            } else if (tiling == vk::ImageTiling::eOptimal &&
+                       (props.optimalTilingFeatures & features) == features) {
+                return format;
+            }
+        }
+
+        throw std::runtime_error("failed to find supported format!");
+    }
+
+    vk::ImageView createImageView(vk::Image& image, vk::Format format,
+                                  vk::ImageAspectFlags aspectFlags) {
         vk::ImageSubresourceRange subresourceRange;
-        subresourceRange.setAspectMask(vk::ImageAspectFlagBits::eColor);
+        subresourceRange.setAspectMask(aspectFlags);
         subresourceRange.setBaseMipLevel(0);
         subresourceRange.setLevelCount(1);
         subresourceRange.setBaseArrayLayer(0);
@@ -1085,11 +1177,19 @@ class VulkanGLFW {
         auto commandBuffer = beginSingleTimeCommands();
 
         vk::ImageSubresourceRange subresourceRange;
-        subresourceRange.setAspectMask(vk::ImageAspectFlagBits::eColor);
         subresourceRange.setBaseMipLevel(0);
         subresourceRange.setLevelCount(1);
         subresourceRange.setBaseArrayLayer(0);
         subresourceRange.setLayerCount(1);
+
+        if (newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+            subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
+            if (hasStencilComponent(format)) {
+                subresourceRange.aspectMask |= vk::ImageAspectFlagBits::eStencil;
+            }
+        } else {
+            subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        }
 
         vk::ImageMemoryBarrier barrier;
         barrier.setOldLayout(oldLayout);
@@ -1118,6 +1218,14 @@ class VulkanGLFW {
 
             sourceStage = vk::PipelineStageFlagBits::eTransfer;
             destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+        } else if (oldLayout == vk::ImageLayout::eUndefined &&
+                   newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+            barrier.setSrcAccessMask({});
+            barrier.setDstAccessMask(vk::AccessFlagBits::eDepthStencilAttachmentRead |
+                                     vk::AccessFlagBits::eDepthStencilAttachmentWrite);
+
+            sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
+            destinationStage = vk::PipelineStageFlagBits::eEarlyFragmentTests;
         } else {
             throw std::invalid_argument("unsupported layout transition!");
         }
@@ -1323,7 +1431,8 @@ class VulkanGLFW {
 
         const auto supportedFeatures = device.getFeatures();
 
-        return indices.isComplete() && extensionsSupported && swapChainAdequate && supportedFeatures.samplerAnisotropy;
+        return indices.isComplete() && extensionsSupported && swapChainAdequate &&
+               supportedFeatures.samplerAnisotropy;
     }
 
     bool checkDeviceExtensionSupport(const vk::PhysicalDevice& device) {
