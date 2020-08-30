@@ -13,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 //#define VULKAN_HPP_NO_EXCEPTIONS // TODO: Switch to a exception-free programm
@@ -27,6 +28,8 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
 
 #pragma warning(push)
 #pragma warning(disable : 26451)
@@ -34,8 +37,17 @@
 #include <stb_image.h>
 #pragma warning(pop)
 
+#pragma warning(push)
+#pragma warning(disable : 6581 6606 26451 26495 26498)
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
+#pragma warning(pop)
+
 constexpr int WIDTH = 800;
 constexpr int HEIGHT = 600;
+
+const std::string MODEL_PATH = "models/viking_room.obj";
+const std::string TEXTURE_PATH = "textures/viking_room.png";
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
@@ -67,6 +79,80 @@ void vkDestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerE
 }
 #endif
 
+struct QueueFamilyIndices {
+    std::optional<uint32_t> graphicsFamily;
+    std::optional<uint32_t> presentFamily;
+
+    bool isComplete() const noexcept {
+        return graphicsFamily.has_value() && presentFamily.has_value();
+    }
+};
+
+struct SwapChainSupportDetails {
+    vk::SurfaceCapabilitiesKHR capabilities;
+    std::vector<vk::SurfaceFormatKHR> formats;
+    std::vector<vk::PresentModeKHR> presentModes;
+
+    bool isAdequate() const noexcept { return !(formats.empty() || presentModes.empty()); }
+};
+
+struct Vertex {
+    glm::vec3 pos;
+    glm::vec3 color;
+    glm::vec2 texCoord;
+
+    bool operator==(const Vertex& other) const {
+        return pos == other.pos && color == other.color && texCoord == other.texCoord;
+    }
+
+    static vk::VertexInputBindingDescription getBindingDescription() noexcept {
+        vk::VertexInputBindingDescription bindingDescription;
+        bindingDescription.setBinding(0);
+        bindingDescription.setStride(sizeof(Vertex));
+        bindingDescription.setInputRate(vk::VertexInputRate::eVertex);
+
+        return bindingDescription;
+    }
+
+    static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions() noexcept {
+        vk::VertexInputAttributeDescription posDesc;
+        posDesc.setBinding(0);
+        posDesc.setLocation(0);
+        posDesc.setFormat(vk::Format::eR32G32B32Sfloat);
+        posDesc.setOffset(offsetof(Vertex, pos));
+
+        vk::VertexInputAttributeDescription colorDesc;
+        colorDesc.setBinding(0);
+        colorDesc.setLocation(1);
+        colorDesc.setFormat(vk::Format::eR32G32B32Sfloat);
+        colorDesc.setOffset(offsetof(Vertex, color));
+
+        vk::VertexInputAttributeDescription texCoordDesc;
+        texCoordDesc.setBinding(0);
+        texCoordDesc.setLocation(2);
+        texCoordDesc.setFormat(vk::Format::eR32G32Sfloat);
+        texCoordDesc.setOffset(offsetof(Vertex, texCoord));
+
+        return {posDesc, colorDesc, texCoordDesc};
+    }
+};
+
+namespace std {
+template <>
+struct hash<Vertex> {
+    size_t operator()(Vertex const& vertex) const {
+        return ((hash<glm::vec3>()(vertex.pos) ^ (hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+               (hash<glm::vec2>()(vertex.texCoord) << 1);
+    }
+};
+}  // namespace std
+
+struct UniformBufferObject {
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 proj;
+};
+
 class VulkanGLFW {
    public:
     void run() {
@@ -77,79 +163,6 @@ class VulkanGLFW {
     }
 
    private:
-    struct QueueFamilyIndices {
-        std::optional<uint32_t> graphicsFamily;
-        std::optional<uint32_t> presentFamily;
-
-        bool isComplete() const noexcept {
-            return graphicsFamily.has_value() && presentFamily.has_value();
-        }
-    };
-
-    struct SwapChainSupportDetails {
-        vk::SurfaceCapabilitiesKHR capabilities;
-        std::vector<vk::SurfaceFormatKHR> formats;
-        std::vector<vk::PresentModeKHR> presentModes;
-
-        bool isAdequate() const noexcept { return !(formats.empty() || presentModes.empty()); }
-    };
-
-    struct Vertex {
-        glm::vec3 pos;
-        glm::vec3 color;
-        glm::vec2 texCoord;
-
-        static vk::VertexInputBindingDescription getBindingDescription() noexcept {
-            vk::VertexInputBindingDescription bindingDescription;
-            bindingDescription.setBinding(0);
-            bindingDescription.setStride(sizeof(Vertex));
-            bindingDescription.setInputRate(vk::VertexInputRate::eVertex);
-
-            return bindingDescription;
-        }
-
-        static std::array<vk::VertexInputAttributeDescription, 3>
-        getAttributeDescriptions() noexcept {
-            vk::VertexInputAttributeDescription posDesc;
-            posDesc.setBinding(0);
-            posDesc.setLocation(0);
-            posDesc.setFormat(vk::Format::eR32G32B32Sfloat);
-            posDesc.setOffset(offsetof(Vertex, pos));
-
-            vk::VertexInputAttributeDescription colorDesc;
-            colorDesc.setBinding(0);
-            colorDesc.setLocation(1);
-            colorDesc.setFormat(vk::Format::eR32G32B32Sfloat);
-            colorDesc.setOffset(offsetof(Vertex, color));
-
-            vk::VertexInputAttributeDescription texCoordDesc;
-            texCoordDesc.setBinding(0);
-            texCoordDesc.setLocation(2);
-            texCoordDesc.setFormat(vk::Format::eR32G32Sfloat);
-            texCoordDesc.setOffset(offsetof(Vertex, texCoord));
-
-            return {posDesc, colorDesc, texCoordDesc};
-        }
-    };
-
-    struct UniformBufferObject {
-        alignas(16) glm::mat4 model;
-        alignas(16) glm::mat4 view;
-        alignas(16) glm::mat4 proj;
-    };
-
-    const std::vector<Vertex> vertices = {{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-                                          {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-                                          {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-                                          {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
-
-                                          {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-                                          {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-                                          {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-                                          {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}};
-
-    const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
-
     GLFWwindow* window = nullptr;
 
     vk::Instance instance;
@@ -176,10 +189,14 @@ class VulkanGLFW {
     vk::PipelineLayout pipelineLayout;
     vk::Pipeline graphicsPipeline;
 
+    std::vector<Vertex> vertices;
     vk::Buffer vertexBuffer;
     vk::DeviceMemory vertexBufferMemory;
+
+    std::vector<uint32_t> indices;
     vk::Buffer indexBuffer;
     vk::DeviceMemory indexBufferMemory;
+
     std::vector<vk::Buffer> uniformBuffers;
     std::vector<vk::DeviceMemory> uniformBuffersMemory;
 
@@ -235,6 +252,7 @@ class VulkanGLFW {
         createTextureImage();
         createTextureImageView();
         createTextureSampler();
+        loadModel();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -775,8 +793,8 @@ class VulkanGLFW {
     void createTextureImage() {
         int texWidth, texHeight, texChannels;
         auto pixels =
-            stbi_load("textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        auto imageSize = static_cast<vk::DeviceSize>(texWidth * texHeight * 4);
+            stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        auto imageSize = static_cast<vk::DeviceSize>(texWidth) * texHeight * 4;
 
         if (!pixels) {
             throw std::runtime_error("failed to load texture image!");
@@ -866,6 +884,56 @@ class VulkanGLFW {
 
         device.destroyBuffer(stagingBuffer);
         device.freeMemory(stagingBufferMemory);
+    }
+
+    void loadModel() {
+        tinyobj::attrib_t attrib;
+        std::vector<tinyobj::shape_t> shapes;
+        std::vector<tinyobj::material_t> materials;
+        std::string warn;
+        std::string err;
+
+        if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str())) {
+            throw std::runtime_error(warn + err);
+        }
+
+        std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
+        for (const auto& shape : shapes) {
+            for (const auto& index : shape.mesh.indices) {
+                Vertex v{};
+                v.pos = {attrib.vertices[static_cast<decltype(attrib.vertices)::size_type>(
+                                             index.vertex_index) *
+                                             3 +
+                                         0],
+                         attrib.vertices[static_cast<decltype(attrib.vertices)::size_type>(
+                                             index.vertex_index) *
+                                             3 +
+                                         1],
+                         attrib.vertices[static_cast<decltype(attrib.vertices)::size_type>(
+                                             index.vertex_index) *
+                                             3 +
+                                         2]};
+                v.texCoord = {
+                    attrib.texcoords[static_cast<decltype(attrib.texcoords)::size_type>(
+                                         index.texcoord_index) *
+                                         2 +
+                                     0],
+                    1.0f - attrib.texcoords[static_cast<decltype(attrib.texcoords)::size_type>(
+                                                index.texcoord_index) *
+                                                2 +
+                                            1]};
+                v.color = {1.0f, 1.0f, 1.0f};
+
+                if (uniqueVertices.count(v) == 0) {
+                    uniqueVertices[v] =
+                        static_cast<decltype(uniqueVertices)::mapped_type>(vertices.size());
+                    vertices.push_back(v);
+                }
+
+                indices.push_back(uniqueVertices.at(v));
+            }
+        }
     }
 
     void createIndexBuffer() {
@@ -1004,7 +1072,7 @@ class VulkanGLFW {
                 {
                     cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline);
                     cmdBuffer.bindVertexBuffers(0, {vertexBuffer}, {0});
-                    cmdBuffer.bindIndexBuffer(indexBuffer, 0, vk::IndexType::eUint16);
+                    cmdBuffer.bindIndexBuffer(indexBuffer, 0, vk::IndexType::eUint32);
                     cmdBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout,
                                                  0, descriptorSets[i], nullptr);
                     cmdBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
@@ -1384,10 +1452,20 @@ class VulkanGLFW {
         const std::vector<vk::PresentModeKHR>& availablePresentModes) noexcept {
         for (const auto& availablePresentMode : availablePresentModes) {
             if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
+                std::cout << "Mailbox" << std::endl;
+                return availablePresentMode;
+            }
+            if (availablePresentMode == vk::PresentModeKHR::eFifoRelaxed) {
+                std::cout << "Fifo Relaxed" << std::endl;
+                return availablePresentMode;
+            }
+            if (availablePresentMode == vk::PresentModeKHR::eImmediate) {
+                std::cout << "Immediate" << std::endl;
                 return availablePresentMode;
             }
         }
 
+        std::cout << "Fifo" << std::endl;
         return vk::PresentModeKHR::eFifo;
     }
 

@@ -9,6 +9,7 @@ Simple model viewer program written in C++17.
 - [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
 - [GLM](https://glm.g-truc.net/)
 - [stb](https://github.com/nothings/stb)
+- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader)
 
 ## Progress
 
@@ -19,7 +20,7 @@ Simple model viewer program written in C++17.
 - [x] Uniform Buffers
 - [x] Texture mapping
 - [x] Depth Buffer
-- [ ] Model loading
+- [x] Model loading
 - [ ] Memory Management
 - [ ] Exception-free
 
@@ -29,3 +30,4 @@ Simple model viewer program written in C++17.
 - Use [EASTL](https://github.com/electronicarts/EASTL) ?
 - [IMGUI](https://github.com/ocornut/imgui) for on-screen menu
 - switch from glm to google's [mathfu](https://github.com/google/mathfu)
+- [glTF](https://www.khronos.org/gltf/) ?
