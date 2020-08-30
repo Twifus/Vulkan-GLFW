@@ -19,7 +19,7 @@ Simple model viewer program written in C++17.
 - [x] Uniform Buffers
 - [x] Texture mapping
 - [x] Depth Buffer
-- [ ] Model loading
+- [x] Model loading
 - [ ] Memory Management
 - [ ] Exception-free
 
